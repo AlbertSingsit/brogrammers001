@@ -1,7 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:notes/home_page.dart';
 
 void main() {
-  runApp(MaterialApp(theme: ThemeData.dark(useMaterial3: true),home: HomePage(),));
+  runApp(First());
 }
 
+class First extends StatelessWidget {
+  const First({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(darkTheme: ThemeData.dark());
+  }
+}
