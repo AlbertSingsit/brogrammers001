@@ -18,7 +18,7 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: AppBar(
         //appTitle at the top of the screen
-        title: const Text("NOTE", style: TextStyle(fontSize: 23)),
+        title: const Text("NOTES", style: TextStyle(fontSize: 23)),
         centerTitle: true,
       ),
       body: ListView.builder(
