@@ -31,9 +31,7 @@ class _DecoyTorchScreenState extends State<DecoyTorchScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(_isFrontCamera
-              ? "Switched to Front Camera"
-              : "Switched to Back Camera"),
+          content: Text(_isFrontCamera ? "now front" : "now back"),
           duration: const Duration(seconds: 1),
         ),
       );
