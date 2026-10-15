@@ -6,7 +6,7 @@ class LocationService {
   static StreamSubscription<Position>? _backgroundStream;
   static Position? _latestPinpointPosition;
 
-  // Keeps the app, Shake Detector, and high-precision GPS awake in the background
+  // Keeps the app, Shake Detector, and GPS awake in the background globally
   static Future<void> startAlwaysOnProtection() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -24,21 +24,21 @@ class LocationService {
       final AndroidSettings androidSettings = AndroidSettings(
         accuracy: LocationAccuracy.bestForNavigation,
         distanceFilter: 0,
-        intervalDuration: const Duration(seconds: 4),
+        intervalDuration: const Duration(seconds: 3),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: "Battery Health Service",
-          notificationText: "Monitoring power optimization in background",
+          notificationTitle: "SafeShake Active",
+          notificationText:
+              "Emergency shake and location protection is running",
           enableWakeLock: true,
           setOngoing: true,
         ),
       );
 
-      _backgroundStream =
-          Geolocator.getPositionStream(
-            locationSettings: androidSettings,
-          ).listen((Position pos) {
-            _latestPinpointPosition = pos;
-          });
+      _backgroundStream = Geolocator.getPositionStream(
+        locationSettings: androidSettings,
+      ).listen((Position pos) {
+        _latestPinpointPosition = pos;
+      });
     } catch (e) {
       debugPrint("Location stream error: $e");
     }
@@ -46,12 +46,6 @@ class LocationService {
 
   static Future<Position?> getBestPosition() async {
     try {
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      // 1. Return recent cached stream position if available (< 2 mins old)
       if (_latestPinpointPosition != null) {
         final age = DateTime.now().difference(
           _latestPinpointPosition!.timestamp,
@@ -61,15 +55,13 @@ class LocationService {
         }
       }
 
-      // 2. Try fast high-accuracy GPS lock (4-second timeout)
       Position pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 4),
+        timeLimit: const Duration(seconds: 3),
       );
       _latestPinpointPosition = pos;
       return pos;
     } catch (_) {
-      // 3. Immediate fallback to last known device location
       try {
         return _latestPinpointPosition ??
             await Geolocator.getLastKnownPosition();

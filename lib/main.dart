@@ -73,7 +73,7 @@ class _MainControllerWrapperState extends State<MainControllerWrapper> {
       SmsService.sendEmergencyAlert(locationUrl);
     });
 
-    // 2. Start stealth recording concurrently
+    // 2. Start stealth recording when app opens/records
     await CameraRecordService.startStealthRecording();
   }
 

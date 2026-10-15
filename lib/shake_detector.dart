@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:sensors_plus/sensors_plus.dart';
 
-// Listens to accelerometer stream and detects a 2-shake gesture.
+// Listens to accelerometer stream and detects a 2-shake gesture globally.
 class ShakeDetectorService {
   StreamSubscription<UserAccelerometerEvent>? _subscription;
   int _shakeCount = 0;
@@ -12,14 +12,15 @@ class ShakeDetectorService {
   ShakeDetectorService({required this.onDoubleShake});
 
   void startListening() {
-    // Lowered from 17.5 to 14.5 so you don't have to throw your arm out to trigger it
-    const double threshold = 14.5;
-    // Both shakes must happen within 2 seconds
-    const Duration resetWindow = Duration(seconds: 2);
-    // Minimum 250ms gap between shakes so 1 back-and-forth motion counts cleanly
-    const Duration minGapBetweenShakes = Duration(milliseconds: 250);
+    // Optimal threshold for pocket or hand shaking without false triggers
+    const double threshold = 13.5;
+    // Window to complete the double shake
+    const Duration resetWindow = Duration(milliseconds: 2200);
+    // Debounce gap between individual shakes
+    const Duration minGapBetweenShakes = Duration(milliseconds: 200);
 
     _subscription = userAccelerometerEventStream().listen((event) {
+      // Use userAccelerometer (gravity stripped out) for pure motion tracking
       double acceleration = sqrt(
         event.x * event.x + event.y * event.y + event.z * event.z,
       );
@@ -27,13 +28,11 @@ class ShakeDetectorService {
       if (acceleration > threshold) {
         DateTime now = DateTime.now();
 
-        // Ignore micro-spikes from the exact same shake movement
         if (_lastShakeTime != null &&
             now.difference(_lastShakeTime!) < minGapBetweenShakes) {
           return;
         }
 
-        // Reset count to 1 if too much time passed since the first shake
         if (_lastShakeTime == null ||
             now.difference(_lastShakeTime!) > resetWindow) {
           _shakeCount = 1;
@@ -43,16 +42,19 @@ class ShakeDetectorService {
 
         _lastShakeTime = now;
 
-        // Trigger emergency on 2 shakes
         if (_shakeCount >= 2) {
           _shakeCount = 0;
+          _lastShakeTime = null;
           onDoubleShake();
         }
       }
+    }, onError: (e) {
+      // Handle sensor stream drops silently
     });
   }
 
   void stopListening() {
     _subscription?.cancel();
+    _subscription = null;
   }
 }
