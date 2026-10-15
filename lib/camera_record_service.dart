@@ -1,28 +1,67 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:camera/camera.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:gal/gal.dart';
 
 class CameraRecordService {
   static CameraController? _controller;
   static bool isRecording = false;
   static bool isTorchOn = false;
 
+  // Primary public DCIM folder: /storage/emulated/0/DCIM/SafeShake
+  static final Directory dcimDir = Directory(
+    '/storage/emulated/0/DCIM/SafeShake',
+  );
+
   static Future<Directory> getEvidenceDirectory() async {
-    final Directory? extDir = await getExternalStorageDirectory();
-    return extDir ?? await getApplicationDocumentsDirectory();
+    try {
+      if (!await Permission.manageExternalStorage.isGranted) {
+        await Permission.manageExternalStorage.request();
+      }
+      if (!await dcimDir.exists()) {
+        await dcimDir.create(recursive: true);
+      }
+      return dcimDir;
+    } catch (e) {
+      debugPrint("DCIM folder access error, using app docs: $e");
+      return await getApplicationDocumentsDirectory();
+    }
   }
 
-  // Returns all recorded .mp4 files sorted newest first
+  // Returns all recorded .mp4 files from DCIM/SafeShake (plus any older app recordings)
   static Future<List<File>> getSavedVideos() async {
     try {
-      final dir = await getEvidenceDirectory();
-      if (!await dir.exists()) return [];
+      final List<File> videos = [];
+      final Directory docDir = await getApplicationDocumentsDirectory();
+      final Directory? extDir = await getExternalStorageDirectory();
 
-      final List<FileSystemEntity> entities = dir.listSync();
-      final List<File> videos = entities
-          .whereType<File>()
-          .where((file) => file.path.endsWith('.mp4'))
-          .toList();
+      final List<Directory> dirsToCheck = [
+        dcimDir,
+        docDir,
+        if (extDir != null) extDir,
+      ];
+
+      final Set<String> seenNames = {};
+      for (final dir in dirsToCheck) {
+        try {
+          if (await dir.exists()) {
+            final entities = dir.listSync();
+            for (final entity in entities) {
+              if (entity is File && entity.path.endsWith('.mp4')) {
+                final String fileName = entity.path
+                    .split(Platform.pathSeparator)
+                    .last;
+                if (!seenNames.contains(fileName)) {
+                  seenNames.add(fileName);
+                  videos.add(entity);
+                }
+              }
+            }
+          }
+        } catch (_) {}
+      }
 
       videos.sort(
         (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
@@ -33,22 +72,43 @@ class CameraRecordService {
     }
   }
 
-  // Copies a video file into the public Android Downloads folder so Gallery/Files can open it
+  // Saves directly into /storage/emulated/0/DCIM/SafeShake AND indexes it in Gallery
   static Future<String?> exportToPublicDownloads(File videoFile) async {
     try {
-      final Directory publicDownloads = Directory(
-        '/storage/emulated/0/Download',
-      );
-      if (await publicDownloads.exists()) {
-        final String fileName = videoFile.path
-            .split(Platform.pathSeparator)
-            .last;
-        final String publicPath = '${publicDownloads.path}/SafeShake_$fileName';
-        await videoFile.copy(publicPath);
-        return publicPath;
+      if (!await Permission.manageExternalStorage.isGranted) {
+        await Permission.manageExternalStorage.request();
       }
-    } catch (_) {}
-    return null;
+
+      final String fileName = videoFile.path.split(Platform.pathSeparator).last;
+      String? savedPath;
+
+      // 1. Copy directly into /storage/emulated/0/DCIM/SafeShake/
+      try {
+        if (!await dcimDir.exists()) {
+          await dcimDir.create(recursive: true);
+        }
+        final String targetDcimPath = '${dcimDir.path}/$fileName';
+        if (videoFile.path != targetDcimPath) {
+          await videoFile.copy(targetDcimPath);
+        }
+        savedPath = targetDcimPath;
+      } catch (e) {
+        debugPrint("Direct DCIM copy error: $e");
+      }
+
+      // 2. Also register with Android MediaStore so Gallery/Google Photos displays it immediately
+      try {
+        await Gal.putVideo(videoFile.path, album: 'SafeShake');
+        savedPath ??= '/storage/emulated/0/DCIM/SafeShake/$fileName';
+      } catch (e) {
+        debugPrint("Gal MediaStore error: $e");
+      }
+
+      return savedPath;
+    } catch (e) {
+      debugPrint("Export error: $e");
+      return null;
+    }
   }
 
   static Future<void> startStealthRecording() async {
@@ -105,17 +165,24 @@ class CameraRecordService {
         XFile videoFile = await _controller!.stopVideoRecording();
         isRecording = false;
 
-        final Directory baseDir = await getEvidenceDirectory();
         final String fileName =
-            'evidence_${DateTime.now().millisecondsSinceEpoch}.mp4';
-        final String targetPath = '${baseDir.path}/$fileName';
+            'SafeShake_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
-        savedVideo = await File(videoFile.path).copy(targetPath);
+        // 1. Save internal copy first so the app UI always has instant access
+        final Directory internalDir = await getApplicationDocumentsDirectory();
+        final File internalCopy = await File(
+          videoFile.path,
+        ).copy('${internalDir.path}/$fileName');
+        savedVideo = internalCopy;
 
-        // Also automatically copy to public Downloads folder if Android allows it
-        await exportToPublicDownloads(savedVideo);
+        // 2. Immediately export to /storage/emulated/0/DCIM/SafeShake and Gallery
+        final String? dcimPath = await exportToPublicDownloads(internalCopy);
+        if (dcimPath != null && await File(dcimPath).exists()) {
+          savedVideo = File(dcimPath);
+        }
       }
     } catch (e) {
+      debugPrint("Stop recording error: $e");
       isRecording = false;
     } finally {
       await _controller?.dispose();

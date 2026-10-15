@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:video_player/video_player.dart';
 import 'camera_record_service.dart';
 import 'location_service.dart';
 import 'emergency_state.dart';
@@ -25,7 +26,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
     _initPermissionsAndWarmUp();
     _loadRecordings();
 
-    // Refresh the recordings list automatically when returning from stealth mode
     EmergencyState.instance.addListener(_onEmergencyStateChanged);
   }
 
@@ -38,13 +38,25 @@ class _ContactsScreenState extends State<ContactsScreen> {
   Future<void> _initPermissionsAndWarmUp() async {
     await [
       Permission.sms,
+      Permission.phone,
       Permission.location,
       Permission.camera,
       Permission.microphone,
+      Permission.notification,
+      Permission.storage,
+      Permission.videos,
     ].request();
 
-    // Warm up the fine GPS receiver right after permissions are granted
-    LocationService.warmUpGps();
+    // Request All Files Access so we can write directly into /storage/emulated/0/DCIM/SafeShake
+    if (!await Permission.manageExternalStorage.isGranted) {
+      await Permission.manageExternalStorage.request();
+    }
+
+    await Permission.locationAlways.request();
+    await Permission.ignoreBatteryOptimizations.request();
+
+    await LocationService.startAlwaysOnProtection();
+    await _loadRecordings();
   }
 
   Future<void> _loadSavedNumber() async {
@@ -75,6 +87,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
     }
   }
 
+  void _playVideo(File file) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => VideoPreviewScreen(videoFile: file)),
+    );
+  }
+
   Future<void> _exportVideo(File file) async {
     final path = await CameraRecordService.exportToPublicDownloads(file);
     if (!mounted) return;
@@ -82,8 +101,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
       SnackBar(
         content: Text(
           path != null
-              ? "Saved to Phone Downloads: $path"
-              : "Stored in app folder: ${file.path}",
+              ? "Saved to DCIM & Gallery:\n$path"
+              : "Failed to save to DCIM. Check storage permissions.",
         ),
         duration: const Duration(seconds: 3),
       ),
@@ -204,7 +223,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     )
                   : ListView.separated(
                       itemCount: _recordings.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      separatorBuilder: (context, index) =>
+                          const Divider(height: 1),
                       itemBuilder: (context, index) {
                         final File file = _recordings[index];
                         final String name = file.path
@@ -212,10 +232,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
                             .last;
                         return ListTile(
                           contentPadding: EdgeInsets.zero,
+                          onTap: () => _playVideo(file),
                           leading: CircleAvatar(
                             backgroundColor: Colors.red.shade50,
                             child: const Icon(
-                              Icons.videocam,
+                              Icons.play_arrow,
                               color: Colors.redAccent,
                             ),
                           ),
@@ -238,7 +259,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                   Icons.download_for_offline_outlined,
                                   color: Colors.blueGrey,
                                 ),
-                                tooltip: "Copy to Public Downloads",
+                                tooltip: "Save to DCIM/SafeShake",
                                 onPressed: () => _exportVideo(file),
                               ),
                               IconButton(
@@ -257,13 +278,102 @@ class _ContactsScreenState extends State<ContactsScreen> {
             ),
             const SizedBox(height: 12),
             const Text(
-              "Double shake anywhere triggers stealth mode.\n2 quick taps on the lightning icon exits.",
+              "Tap any recording to play.\nVideos save directly to Internal Storage > DCIM > SafeShake.",
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey, fontSize: 12),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class VideoPreviewScreen extends StatefulWidget {
+  final File videoFile;
+
+  const VideoPreviewScreen({super.key, required this.videoFile});
+
+  @override
+  State<VideoPreviewScreen> createState() => _VideoPreviewScreenState();
+}
+
+class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
+  late VideoPlayerController _videoController;
+  bool _initialized = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _videoController = VideoPlayerController.file(widget.videoFile)
+      ..initialize()
+          .then((_) {
+            if (mounted) {
+              setState(() => _initialized = true);
+              _videoController.play();
+            }
+          })
+          .catchError((e) {
+            if (mounted) {
+              setState(() => _errorMessage = "Could not play video: $e");
+            }
+          });
+  }
+
+  @override
+  void dispose() {
+    _videoController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final String fileName = widget.videoFile.path
+        .split(Platform.pathSeparator)
+        .last;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: Text(fileName, style: const TextStyle(fontSize: 14)),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: Center(
+        child: _errorMessage != null
+            ? Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Text(
+                  _errorMessage!,
+                  style: const TextStyle(color: Colors.white),
+                  textAlign: TextAlign.center,
+                ),
+              )
+            : _initialized
+            ? AspectRatio(
+                aspectRatio: _videoController.value.aspectRatio,
+                child: VideoPlayer(_videoController),
+              )
+            : const CircularProgressIndicator(color: Colors.white),
+      ),
+      floatingActionButton: _initialized
+          ? FloatingActionButton(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+              onPressed: () {
+                setState(() {
+                  _videoController.value.isPlaying
+                      ? _videoController.pause()
+                      : _videoController.play();
+                });
+              },
+              child: Icon(
+                _videoController.value.isPlaying
+                    ? Icons.pause
+                    : Icons.play_arrow,
+              ),
+            )
+          : null,
     );
   }
 }

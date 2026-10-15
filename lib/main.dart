@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'emergency_state.dart';
 import 'shake_detector.dart';
 import 'location_service.dart';
@@ -7,7 +9,7 @@ import 'camera_record_service.dart';
 import 'contacts_screen.dart';
 import 'decoy_torch_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const SafeShakeApp());
 }
@@ -34,18 +36,17 @@ class MainControllerWrapper extends StatefulWidget {
 }
 
 class _MainControllerWrapperState extends State<MainControllerWrapper> {
-  late ShakeDetectorService _shakeDetector;
+  late ShakeDetectorService _uiShakeDetector;
   final EmergencyState _state = EmergencyState.instance;
 
   @override
   void initState() {
     super.initState();
 
-    // Start listening for double shake immediately
-    _shakeDetector = ShakeDetectorService(
+    _uiShakeDetector = ShakeDetectorService(
       onDoubleShake: _handleEmergencyTrigger,
     );
-    _shakeDetector.startListening();
+    _uiShakeDetector.startListening();
 
     _state.addListener(_onEmergencyStateChanged);
   }
@@ -64,20 +65,19 @@ class _MainControllerWrapperState extends State<MainControllerWrapper> {
 
     _state.triggerEmergency();
 
-    // 1. Fire up silent video recording + torch
     await CameraRecordService.startStealthRecording();
 
-    // 2. Fetch satellite coordinates
-    String? coordinates = await LocationService.getCoordinatesUrl();
-    String locationUrl = coordinates ?? "GPS location unavailable (Timed out)";
+    Position? pos = await LocationService.getBestPosition();
+    String locationUrl = pos != null
+        ? "${LocationService.formatMapUrl(pos)} (±${pos.accuracy.toInt()}m)"
+        : "GPS location unavailable";
 
-    // 3. Dispatch offline SMS with danger notice and map link
     await SmsService.sendEmergencyAlert(locationUrl);
   }
 
   @override
   void dispose() {
-    _shakeDetector.stopListening();
+    _uiShakeDetector.stopListening();
     _state.removeListener(_onEmergencyStateChanged);
     super.dispose();
   }
