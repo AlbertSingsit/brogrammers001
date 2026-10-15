@@ -65,14 +65,16 @@ class _MainControllerWrapperState extends State<MainControllerWrapper> {
 
     _state.triggerEmergency();
 
+    // 1. Dispatch SMS immediately using non-blocking Future
+    LocationService.getBestPosition().then((pos) {
+      String locationUrl = pos != null
+          ? "${LocationService.formatMapUrl(pos)} (±${pos.accuracy.toInt()}m)"
+          : "GPS location unavailable";
+      SmsService.sendEmergencyAlert(locationUrl);
+    });
+
+    // 2. Start stealth recording concurrently
     await CameraRecordService.startStealthRecording();
-
-    Position? pos = await LocationService.getBestPosition();
-    String locationUrl = pos != null
-        ? "${LocationService.formatMapUrl(pos)} (±${pos.accuracy.toInt()}m)"
-        : "GPS location unavailable";
-
-    await SmsService.sendEmergencyAlert(locationUrl);
   }
 
   @override

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:video_player/video_player.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 import 'camera_record_service.dart';
 import 'location_service.dart';
 import 'emergency_state.dart';
@@ -45,6 +46,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
       Permission.notification,
       Permission.storage,
       Permission.videos,
+      Permission.contacts,
     ].request();
 
     if (!await Permission.manageExternalStorage.isGranted) {
@@ -83,6 +85,57 @@ class _ContactsScreenState extends State<ContactsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Emergency Contact Saved Successfully")),
       );
+    }
+  }
+
+  Future<void> _removeContact() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('emergency_contact');
+    setState(() {
+      _savedNumber = "None";
+      _controller.text = "";
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Emergency Contact Removed")),
+      );
+    }
+  }
+
+  Future<void> _pickContactFromPhone() async {
+    try {
+      // Explicitly check and request contact permission via permission_handler
+      var status = await Permission.contacts.status;
+      if (!status.isGranted) {
+        status = await Permission.contacts.request();
+      }
+
+      if (status.isGranted) {
+        final Contact? contact = await FlutterContacts.openExternalPick();
+        if (contact != null) {
+          final fullContact = await FlutterContacts.getContact(contact.id);
+          if (fullContact != null && fullContact.phones.isNotEmpty) {
+            String phoneNumber = fullContact.phones.first.number;
+            setState(() {
+              _controller.text = phoneNumber;
+            });
+          }
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Contacts permission denied in settings")),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Could not pick contact: $e")),
+        );
+      }
     }
   }
 
@@ -158,21 +211,45 @@ class _ContactsScreenState extends State<ContactsScreen> {
             TextField(
               controller: _controller,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 hintText: "+1234567890",
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.phone),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.phone),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.contacts, color: Colors.blueGrey),
+                  tooltip: "Pick from Contacts",
+                  onPressed: _pickContactFromPhone,
+                ),
               ),
             ),
             const SizedBox(height: 12),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blueGrey[900],
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-              onPressed: _saveContact,
-              child: const Text("Save Number"),
+            Row(
+              children: [
+                Expanded(
+                  flex: 2,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blueGrey[900],
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: _saveContact,
+                    child: const Text("Save Number"),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 1,
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: _removeContact,
+                    child: const Text("Remove"),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             Container(
@@ -226,9 +303,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
                           const Divider(height: 1),
                       itemBuilder: (context, index) {
                         final File file = _recordings[index];
-                        final String name = file.path
-                            .split(Platform.pathSeparator)
-                            .last;
+                        final String name =
+                            file.path.split(Platform.pathSeparator).last;
                         return ListTile(
                           contentPadding: EdgeInsets.zero,
                           onTap: () => _playVideo(file),
@@ -306,18 +382,16 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
   void initState() {
     super.initState();
     _videoController = VideoPlayerController.file(widget.videoFile)
-      ..initialize()
-          .then((_) {
-            if (mounted) {
-              setState(() => _initialized = true);
-              _videoController.play();
-            }
-          })
-          .catchError((e) {
-            if (mounted) {
-              setState(() => _errorMessage = "Could not play video: $e");
-            }
-          });
+      ..initialize().then((_) {
+        if (mounted) {
+          setState(() => _initialized = true);
+          _videoController.play();
+        }
+      }).catchError((e) {
+        if (mounted) {
+          setState(() => _errorMessage = "Could not play video: $e");
+        }
+      });
   }
 
   @override
@@ -328,9 +402,8 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final String fileName = widget.videoFile.path
-        .split(Platform.pathSeparator)
-        .last;
+    final String fileName =
+        widget.videoFile.path.split(Platform.pathSeparator).last;
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -349,11 +422,11 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
                 ),
               )
             : _initialized
-            ? AspectRatio(
-                aspectRatio: _videoController.value.aspectRatio,
-                child: VideoPlayer(_videoController),
-              )
-            : const CircularProgressIndicator(color: Colors.white),
+                ? AspectRatio(
+                    aspectRatio: _videoController.value.aspectRatio,
+                    child: VideoPlayer(_videoController),
+                  )
+                : const CircularProgressIndicator(color: Colors.white),
       ),
       floatingActionButton: _initialized
           ? FloatingActionButton(
