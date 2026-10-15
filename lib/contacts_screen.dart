@@ -47,7 +47,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
       Permission.videos,
     ].request();
 
-    // Request All Files Access so we can write directly into /storage/emulated/0/DCIM/SafeShake
     if (!await Permission.manageExternalStorage.isGranted) {
       await Permission.manageExternalStorage.request();
     }
@@ -278,7 +277,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
             ),
             const SizedBox(height: 12),
             const Text(
-              "Tap any recording to play.\nVideos save directly to Internal Storage > DCIM > SafeShake.",
+              "Double shake anywhere triggers stealth mode.\n2 quick taps on the lightning icon exits.",
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey, fontSize: 12),
             ),

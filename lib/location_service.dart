@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
 class LocationService {
@@ -36,19 +37,22 @@ class LocationService {
           Geolocator.getPositionStream(
             locationSettings: androidSettings,
           ).listen((Position pos) {
-            if (_latestPinpointPosition == null ||
-                pos.accuracy <= _latestPinpointPosition!.accuracy ||
-                pos.accuracy <= 20.0) {
-              _latestPinpointPosition = pos;
-            }
+            _latestPinpointPosition = pos;
           });
-    } catch (_) {}
+    } catch (e) {
+      debugPrint("Location stream error: $e");
+    }
   }
 
   static Future<Position?> getBestPosition() async {
     try {
-      if (_latestPinpointPosition != null &&
-          _latestPinpointPosition!.accuracy <= 20.0) {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      // 1. Return recent cached stream position if available (< 2 mins old)
+      if (_latestPinpointPosition != null) {
         final age = DateTime.now().difference(
           _latestPinpointPosition!.timestamp,
         );
@@ -57,14 +61,21 @@ class LocationService {
         }
       }
 
+      // 2. Try fast high-accuracy GPS lock (4-second timeout)
       Position pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation,
-        timeLimit: const Duration(seconds: 8),
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 4),
       );
       _latestPinpointPosition = pos;
       return pos;
     } catch (_) {
-      return _latestPinpointPosition ?? await Geolocator.getLastKnownPosition();
+      // 3. Immediate fallback to last known device location
+      try {
+        return _latestPinpointPosition ??
+            await Geolocator.getLastKnownPosition();
+      } catch (_) {
+        return _latestPinpointPosition;
+      }
     }
   }
 
