@@ -1,8 +1,11 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'camera_record_service.dart';
+import 'location_service.dart';
+import 'emergency_state.dart';
 
-// Setup screen to configure emergency contact number and request permissions.
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
 
@@ -13,25 +16,37 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> {
   final TextEditingController _controller = TextEditingController();
   String _savedNumber = "None";
+  List<File> _recordings = [];
 
   @override
   void initState() {
     super.initState();
     _loadSavedNumber();
-    _requestRequiredPermissions();
+    _initPermissionsAndWarmUp();
+    _loadRecordings();
+
+    // Refresh the recordings list automatically when returning from stealth mode
+    EmergencyState.instance.addListener(_onEmergencyStateChanged);
   }
 
-  // Ask for all runtime permissions upfront on first open
-  Future<void> _requestRequiredPermissions() async {
+  void _onEmergencyStateChanged() {
+    if (!EmergencyState.instance.isEmergencyActive && mounted) {
+      Future.delayed(const Duration(milliseconds: 600), _loadRecordings);
+    }
+  }
+
+  Future<void> _initPermissionsAndWarmUp() async {
     await [
       Permission.sms,
       Permission.location,
       Permission.camera,
       Permission.microphone,
     ].request();
+
+    // Warm up the fine GPS receiver right after permissions are granted
+    LocationService.warmUpGps();
   }
 
-  // Load previously saved contact from disk
   Future<void> _loadSavedNumber() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
@@ -40,7 +55,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
     });
   }
 
-  // Persist contact number into local disk storage
+  Future<void> _loadRecordings() async {
+    final videos = await CameraRecordService.getSavedVideos();
+    if (mounted) {
+      setState(() => _recordings = videos);
+    }
+  }
+
   Future<void> _saveContact() async {
     if (_controller.text.trim().isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
@@ -54,6 +75,43 @@ class _ContactsScreenState extends State<ContactsScreen> {
     }
   }
 
+  Future<void> _exportVideo(File file) async {
+    final path = await CameraRecordService.exportToPublicDownloads(file);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          path != null
+              ? "Saved to Phone Downloads: $path"
+              : "Stored in app folder: ${file.path}",
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _deleteVideo(File file) async {
+    try {
+      await file.delete();
+      await _loadRecordings();
+    } catch (_) {}
+  }
+
+  String _formatFileDetails(File file) {
+    final DateTime modified = file.lastModifiedSync();
+    final double sizeMb = file.lengthSync() / (1024 * 1024);
+    final String timeStr =
+        "${modified.day}/${modified.month}/${modified.year} ${modified.hour.toString().padLeft(2, '0')}:${modified.minute.toString().padLeft(2, '0')}:${modified.second.toString().padLeft(2, '0')}";
+    return "$timeStr  •  ${sizeMb.toStringAsFixed(2)} MB";
+  }
+
+  @override
+  void dispose() {
+    EmergencyState.instance.removeListener(_onEmergencyStateChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -61,6 +119,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
         title: const Text("SafeShake Settings"),
         backgroundColor: Colors.blueGrey[900],
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: "Refresh Recordings",
+            onPressed: _loadRecordings,
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(24.0),
@@ -81,7 +146,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 prefixIcon: Icon(Icons.phone),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blueGrey[900],
@@ -91,9 +156,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
               onPressed: _saveContact,
               child: const Text("Save Number"),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
             Container(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: Colors.grey[200],
                 borderRadius: BorderRadius.circular(8),
@@ -104,9 +169,95 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 style: const TextStyle(fontWeight: FontWeight.w500),
               ),
             ),
-            const Spacer(),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  "Recorded Evidence (${_recordings.length})",
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: _loadRecordings,
+                  icon: const Icon(Icons.folder_open, size: 18),
+                  label: const Text("Refresh"),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Expanded(
+              child: _recordings.isEmpty
+                  ? Container(
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        "No recordings yet.\nTrigger a double-shake to capture evidence.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    )
+                  : ListView.separated(
+                      itemCount: _recordings.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final File file = _recordings[index];
+                        final String name = file.path
+                            .split(Platform.pathSeparator)
+                            .last;
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.red.shade50,
+                            child: const Icon(
+                              Icons.videocam,
+                              color: Colors.redAccent,
+                            ),
+                          ),
+                          title: Text(
+                            name,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            _formatFileDetails(file),
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.download_for_offline_outlined,
+                                  color: Colors.blueGrey,
+                                ),
+                                tooltip: "Copy to Public Downloads",
+                                onPressed: () => _exportVideo(file),
+                              ),
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.redAccent,
+                                ),
+                                tooltip: "Delete",
+                                onPressed: () => _deleteVideo(file),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            const SizedBox(height: 12),
             const Text(
-              "Triple shake anywhere triggers stealth mode.\n3 quick taps on the decoy torch button exits.",
+              "Double shake anywhere triggers stealth mode.\n2 quick taps on the lightning icon exits.",
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey, fontSize: 12),
             ),

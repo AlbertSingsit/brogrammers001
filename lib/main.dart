@@ -26,7 +26,6 @@ class SafeShakeApp extends StatelessWidget {
   }
 }
 
-// Wrapper that listens to hardware shake events across the app lifecycle
 class MainControllerWrapper extends StatefulWidget {
   const MainControllerWrapper({super.key});
 
@@ -42,17 +41,15 @@ class _MainControllerWrapperState extends State<MainControllerWrapper> {
   void initState() {
     super.initState();
 
-    // Start listening for triple shake immediately
+    // Start listening for double shake immediately
     _shakeDetector = ShakeDetectorService(
-      onTripleShake: _handleEmergencyTrigger,
+      onDoubleShake: _handleEmergencyTrigger,
     );
     _shakeDetector.startListening();
 
-    // Watch emergency state to switch to decoy UI when triggered
     _state.addListener(_onEmergencyStateChanged);
   }
 
-  // Push the decoy screen as soon as emergency state turns true
   void _onEmergencyStateChanged() {
     if (_state.isEmergencyActive && mounted) {
       Navigator.push(
@@ -62,15 +59,13 @@ class _MainControllerWrapperState extends State<MainControllerWrapper> {
     }
   }
 
-  // Main emergency execution sequence
   Future<void> _handleEmergencyTrigger() async {
-    // Avoid double triggers if already in emergency mode
     if (_state.isEmergencyActive) return;
 
     _state.triggerEmergency();
 
-    // 1. Fire up silent video recording
-    CameraRecordService.startStealthRecording();
+    // 1. Fire up silent video recording + torch
+    await CameraRecordService.startStealthRecording();
 
     // 2. Fetch satellite coordinates
     String? coordinates = await LocationService.getCoordinatesUrl();
