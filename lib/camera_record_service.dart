@@ -9,8 +9,9 @@ class CameraRecordService {
   static CameraController? _controller;
   static bool isRecording = false;
   static bool isTorchOn = false;
+  static bool _isSwitching = false;
+  static CameraLensDirection _currentLens = CameraLensDirection.back;
 
-  // Primary public DCIM folder: /storage/emulated/0/DCIM/SafeShake
   static final Directory dcimDir = Directory(
     '/storage/emulated/0/DCIM/SafeShake',
   );
@@ -25,12 +26,11 @@ class CameraRecordService {
       }
       return dcimDir;
     } catch (e) {
-      debugPrint("DCIM folder access error, using app docs: $e");
+      debugPrint("DCIM folder access error: $e");
       return await getApplicationDocumentsDirectory();
     }
   }
 
-  // Returns all recorded .mp4 files from DCIM/SafeShake (plus any older app recordings)
   static Future<List<File>> getSavedVideos() async {
     try {
       final List<File> videos = [];
@@ -50,9 +50,8 @@ class CameraRecordService {
             final entities = dir.listSync();
             for (final entity in entities) {
               if (entity is File && entity.path.endsWith('.mp4')) {
-                final String fileName = entity.path
-                    .split(Platform.pathSeparator)
-                    .last;
+                final String fileName =
+                    entity.path.split(Platform.pathSeparator).last;
                 if (!seenNames.contains(fileName)) {
                   seenNames.add(fileName);
                   videos.add(entity);
@@ -72,7 +71,6 @@ class CameraRecordService {
     }
   }
 
-  // Saves directly into /storage/emulated/0/DCIM/SafeShake AND indexes it in Gallery
   static Future<String?> exportToPublicDownloads(File videoFile) async {
     try {
       if (!await Permission.manageExternalStorage.isGranted) {
@@ -82,7 +80,6 @@ class CameraRecordService {
       final String fileName = videoFile.path.split(Platform.pathSeparator).last;
       String? savedPath;
 
-      // 1. Copy directly into /storage/emulated/0/DCIM/SafeShake/
       try {
         if (!await dcimDir.exists()) {
           await dcimDir.create(recursive: true);
@@ -96,7 +93,6 @@ class CameraRecordService {
         debugPrint("Direct DCIM copy error: $e");
       }
 
-      // 2. Also register with Android MediaStore so Gallery/Google Photos displays it immediately
       try {
         await Gal.putVideo(videoFile.path, album: 'SafeShake');
         savedPath ??= '/storage/emulated/0/DCIM/SafeShake/$fileName';
@@ -111,15 +107,44 @@ class CameraRecordService {
     }
   }
 
-  static Future<void> startStealthRecording() async {
-    if (isRecording) return;
+  // Helper to save a recorded XFile clip to internal storage & DCIM
+  static Future<File?> _saveRecordedClip(
+      XFile videoFile, String lensTag) async {
+    try {
+      final String fileName =
+          'SafeShake_${lensTag}_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
+      final Directory internalDir = await getApplicationDocumentsDirectory();
+      final File internalCopy = await File(
+        videoFile.path,
+      ).copy('${internalDir.path}/$fileName');
+
+      final String? dcimPath = await exportToPublicDownloads(internalCopy);
+      if (dcimPath != null && await File(dcimPath).exists()) {
+        return File(dcimPath);
+      }
+      return internalCopy;
+    } catch (e) {
+      debugPrint("Save clip error: $e");
+      return null;
+    }
+  }
+
+  // Starts stealth recording (ALWAYS defaults to Back Camera first)
+  static Future<void> startStealthRecording() async {
+    if (isRecording || _isSwitching) return;
+
+    _currentLens = CameraLensDirection.back;
+    await _initAndRecord(_currentLens);
+  }
+
+  static Future<void> _initAndRecord(CameraLensDirection direction) async {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) return;
 
       CameraDescription selectedCamera = cameras.firstWhere(
-        (cam) => cam.lensDirection == CameraLensDirection.back,
+        (cam) => cam.lensDirection == direction,
         orElse: () => cameras.first,
       );
 
@@ -130,19 +155,80 @@ class CameraRecordService {
       );
 
       await _controller!.initialize();
-      await _controller!.setFlashMode(FlashMode.off);
+
+      // Only set flash mode on the back camera (front camera throws hardware errors)
+      if (direction == CameraLensDirection.back) {
+        try {
+          await _controller!.setFlashMode(FlashMode.off);
+        } catch (_) {}
+      }
       isTorchOn = false;
 
       await _controller!.startVideoRecording();
       isRecording = true;
     } catch (e) {
+      debugPrint("Init and record error: $e");
       isRecording = false;
     }
   }
 
-  static Future<bool> setTorch(bool enable) async {
-    if (_controller == null || !_controller!.value.isInitialized) return false;
+  // Safely saves current clip, flips camera lens, and continues recording immediately
+  static Future<void> switchCamera() async {
+    if (_isSwitching) return;
+    _isSwitching = true;
+
     try {
+      final cameras = await availableCameras();
+      if (cameras.length < 2) return;
+
+      final String previousLensTag =
+          _currentLens == CameraLensDirection.back ? 'BACK' : 'FRONT';
+
+      // 1. Stop current recording and save the clip so no evidence is lost
+      if (_controller != null) {
+        try {
+          if (isTorchOn && _currentLens == CameraLensDirection.back) {
+            await _controller!.setFlashMode(FlashMode.off);
+            isTorchOn = false;
+          }
+          if (isRecording && _controller!.value.isRecordingVideo) {
+            XFile clip = await _controller!.stopVideoRecording();
+            isRecording = false;
+            // Save the recorded segment in the background
+            _saveRecordedClip(clip, previousLensTag);
+          }
+        } catch (e) {
+          debugPrint("Error stopping previous camera during switch: $e");
+        } finally {
+          await _controller!.dispose();
+          _controller = null;
+        }
+      }
+
+      // 2. Give Android CameraX 250ms to fully release hardware encoders
+      await Future.delayed(const Duration(milliseconds: 250));
+
+      // 3. Toggle lens direction and start recording the new stream
+      _currentLens = _currentLens == CameraLensDirection.back
+          ? CameraLensDirection.front
+          : CameraLensDirection.back;
+
+      await _initAndRecord(_currentLens);
+    } catch (e) {
+      debugPrint("Switch camera error: $e");
+    } finally {
+      _isSwitching = false;
+    }
+  }
+
+  static Future<bool> setTorch(bool enable) async {
+    if (_controller == null ||
+        !_controller!.value.isInitialized ||
+        _isSwitching) {
+      return false;
+    }
+    try {
+      if (_currentLens == CameraLensDirection.front) return false;
       await _controller!.setFlashMode(enable ? FlashMode.torch : FlashMode.off);
       isTorchOn = enable;
       return isTorchOn;
@@ -152,12 +238,19 @@ class CameraRecordService {
   }
 
   static Future<File?> stopRecording() async {
+    // Wait briefly if user disarms while a camera switch is in progress
+    while (_isSwitching) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
     if (_controller == null) return null;
 
     File? savedVideo;
     try {
-      if (isTorchOn) {
-        await _controller!.setFlashMode(FlashMode.off);
+      if (isTorchOn && _currentLens == CameraLensDirection.back) {
+        try {
+          await _controller!.setFlashMode(FlashMode.off);
+        } catch (_) {}
         isTorchOn = false;
       }
 
@@ -165,21 +258,9 @@ class CameraRecordService {
         XFile videoFile = await _controller!.stopVideoRecording();
         isRecording = false;
 
-        final String fileName =
-            'SafeShake_${DateTime.now().millisecondsSinceEpoch}.mp4';
-
-        // 1. Save internal copy first so the app UI always has instant access
-        final Directory internalDir = await getApplicationDocumentsDirectory();
-        final File internalCopy = await File(
-          videoFile.path,
-        ).copy('${internalDir.path}/$fileName');
-        savedVideo = internalCopy;
-
-        // 2. Immediately export to /storage/emulated/0/DCIM/SafeShake and Gallery
-        final String? dcimPath = await exportToPublicDownloads(internalCopy);
-        if (dcimPath != null && await File(dcimPath).exists()) {
-          savedVideo = File(dcimPath);
-        }
+        final String lensTag =
+            _currentLens == CameraLensDirection.back ? 'BACK' : 'FRONT';
+        savedVideo = await _saveRecordedClip(videoFile, lensTag);
       }
     } catch (e) {
       debugPrint("Stop recording error: $e");
@@ -189,6 +270,7 @@ class CameraRecordService {
       _controller = null;
       isRecording = false;
       isTorchOn = false;
+      _currentLens = CameraLensDirection.back; // Reset to back for next time
     }
     return savedVideo;
   }
