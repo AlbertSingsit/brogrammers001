@@ -187,7 +187,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("SafeShake Settings"),
+        title: const Text("Safe Evidence Settings"),
         backgroundColor: Colors.blueGrey[900],
         foregroundColor: Colors.white,
         actions: [

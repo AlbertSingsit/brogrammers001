@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:flutter/services.dart';
 import 'emergency_state.dart';
 import 'shake_detector.dart';
 import 'location_service.dart';
@@ -21,7 +21,7 @@ class SafeShakeApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'SafeShake',
+      title: 'Safe Evidence',
       theme: ThemeData(useMaterial3: true, primarySwatch: Colors.blueGrey),
       home: const MainControllerWrapper(),
     );
@@ -36,6 +36,7 @@ class MainControllerWrapper extends StatefulWidget {
 }
 
 class _MainControllerWrapperState extends State<MainControllerWrapper> {
+  static const MethodChannel _tileChannel = MethodChannel('safeshake/tile');
   late ShakeDetectorService _uiShakeDetector;
   final EmergencyState _state = EmergencyState.instance;
 
@@ -49,6 +50,25 @@ class _MainControllerWrapperState extends State<MainControllerWrapper> {
     _uiShakeDetector.startListening();
 
     _state.addListener(_onEmergencyStateChanged);
+
+    // 1. Trigger when app is already running in memory/background
+    _tileChannel.setMethodCallHandler((call) async {
+      if (call.method == 'triggerFromTile') {
+        _handleEmergencyTrigger();
+      }
+    });
+
+    // 2. Trigger when app is cold-launched from the Quick Settings Tile
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        final bool? shouldTrigger = await _tileChannel.invokeMethod<bool>(
+          'checkPendingTrigger',
+        );
+        if (shouldTrigger == true) {
+          _handleEmergencyTrigger();
+        }
+      } catch (_) {}
+    });
   }
 
   void _onEmergencyStateChanged() {
@@ -73,7 +93,7 @@ class _MainControllerWrapperState extends State<MainControllerWrapper> {
       SmsService.sendEmergencyAlert(locationUrl);
     });
 
-    // 2. Start stealth recording when app opens/records
+    // 2. Start stealth recording immediately
     await CameraRecordService.startStealthRecording();
   }
 

@@ -27,7 +27,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
-        android:label="SafeShake"
+        android:label="Safe Evidence"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true">
@@ -50,6 +50,18 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- Quick Settings Tile Service -->
+        <service
+            android:name=".SafeShakeTileService"
+            android:exported="true"
+            android:label="Torch"
+            android:icon="@android:drawable/ic_menu_compass"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
         
         <meta-data
             android:name="flutterEmbedding"

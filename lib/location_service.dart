@@ -26,7 +26,7 @@ class LocationService {
         distanceFilter: 0,
         intervalDuration: const Duration(seconds: 3),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: "SafeShake Active",
+          notificationTitle: "Safe Evidence Active",
           notificationText:
               "Emergency shake and location protection is running",
           enableWakeLock: true,
